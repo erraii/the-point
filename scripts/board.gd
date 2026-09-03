@@ -34,6 +34,13 @@ var red_score := 0.0
 var consecutive_passes := 0
 var game_over := false
 
+var pending_position := Vector2i(-1, -1)
+var pending_style_seed := 0
+var has_pending_move := false
+
+var last_placed_position := Vector2i(-1, -1)
+var has_last_move := false
+
 func _draw() -> void:
 	var board_width := (COLUMNS - 1) * CELL_SIZE
 	var board_height := (ROWS - 1) * CELL_SIZE
@@ -77,6 +84,8 @@ func _draw() -> void:
 			point_color,
 			point_styles[grid_position]
 		)
+	_draw_move_indicators()
+	_draw_hud()
 	_draw_hud()
 	
 func _draw_captured_regions() -> void:
@@ -346,6 +355,51 @@ func _get_planar_neighbors(
 		planar_neighbors
 	)
 
+func _edge_matches(
+	edge: Array,
+	first: Vector2i,
+	second: Vector2i
+) -> bool:
+	return (
+		(
+			edge[0] == first
+			and edge[1] == second
+		)
+		or
+		(
+			edge[0] == second
+			and edge[1] == first
+		)
+	)
+
+
+func _pop_biconnected_component(
+	edge_stack: Array,
+	stop_first: Vector2i,
+	stop_second: Vector2i
+) -> Array[Vector2i]:
+	var component_positions: Dictionary = {}
+
+	while not edge_stack.is_empty():
+		var edge: Array = edge_stack.pop_back()
+
+		component_positions[edge[0]] = true
+		component_positions[edge[1]] = true
+
+		if _edge_matches(
+			edge,
+			stop_first,
+			stop_second
+		):
+			break
+
+	var component: Array[Vector2i] = []
+
+	for raw_position in component_positions:
+		var grid_position: Vector2i = raw_position
+		component.append(grid_position)
+
+	return component
 
 func _directed_edge_key(
 	first: Vector2i,
@@ -422,456 +476,19 @@ func _cycle_has_repeated_points(
 
 	return false
 
-
-func _walk_face(
-	start_from: Vector2i,
-	start_to: Vector2i,
-	player: int,
-	visited_edges: Dictionary
-) -> Array[Vector2i]:
-	var face: Array[Vector2i] = []
-
-	var from_position := start_from
-	var to_position := start_to
-
-	for step in range(MAX_FACE_WALK_STEPS):
-		var edge_key := _directed_edge_key(
-			from_position,
-			to_position
-		)
-
-		if visited_edges.has(edge_key):
-			return []
-
-		visited_edges[edge_key] = true
-		face.append(from_position)
-
-		var neighbors := _get_planar_neighbors(
-			to_position,
-			player
-		)
-
-		if neighbors.size() < 2:
-			return []
-
-		var incoming_index := neighbors.find(
-			from_position
-		)
-
-		if incoming_index < 0:
-			return []
-
-		# Gelen bağlantının hemen saat yönündeki
-		# bağlantısıyla aynı yüzün kenarında ilerle.
-		var next_index := (
-			incoming_index - 1
-			+ neighbors.size()
-		) % neighbors.size()
-
-		var next_position := neighbors[next_index]
-
-		from_position = to_position
-		to_position = next_position
-
-		if (
-			from_position == start_from
-			and to_position == start_to
-		):
-			return face
-
-	return []
-
-
-func _find_player_faces(player: int) -> Array:
-	var faces: Array = []
-	var visited_edges: Dictionary = {}
-
-	for raw_position in points:
-		var grid_position: Vector2i = raw_position
-
-		if not _is_active_player_point(
-			grid_position,
-			player
-		):
-			continue
-
-		for neighbor in _get_planar_neighbors(
-			grid_position,
-			player
-		):
-			var edge_key := _directed_edge_key(
-				grid_position,
-				neighbor
-			)
-
-			if visited_edges.has(edge_key):
-				continue
-
-			var face := _walk_face(
-				grid_position,
-				neighbor,
-				player,
-				visited_edges
-			)
-
-			if face.size() < 3:
-				continue
-
-			if _cycle_has_repeated_points(face):
-				continue
-
-			if _cycle_crosses_itself(face):
-				continue
-
-			var signed_area := (
-				_calculate_signed_cycle_area(face)
-			)
-
-			# Negatif alan dışarıdaki sonsuz yüzdür.
-			if signed_area <= FACE_AREA_EPSILON:
-				continue
-
-			faces.append(face)
-
-	return faces
-
-
-func _get_cycle_edge_keys(cycle: Array) -> Array[String]:
-	var edge_keys: Array[String] = []
-
-	for index in range(cycle.size()):
-		var current = cycle[index]
-		var next = cycle[
-			(index + 1) % cycle.size()
-		]
-
-		edge_keys.append(
-			_undirected_edge_key(
-				current,
-				next
-			)
-		)
-
-	return edge_keys
-	
-func _get_player_component_ids(
-	player: int
-) -> Dictionary:
-	var component_ids: Dictionary = {}
-	var next_component_id := 0
-
-	for raw_position in points:
-		var starting_position: Vector2i = raw_position
-
-		if not _is_active_player_point(
-			starting_position,
-			player
-		):
-			continue
-
-		if component_ids.has(starting_position):
-			continue
-
-		var positions_to_visit: Array[Vector2i] = [
-			starting_position
-		]
-		var current_index := 0
-
-		component_ids[starting_position] = (
-			next_component_id
-		)
-
-		while current_index < positions_to_visit.size():
-			var current_position := (
-				positions_to_visit[current_index]
-			)
-			current_index += 1
-
-			for neighbor in _get_planar_neighbors(
-				current_position,
-				player
-			):
-				if component_ids.has(neighbor):
-					continue
-
-				component_ids[neighbor] = (
-					next_component_id
-				)
-
-				positions_to_visit.append(neighbor)
-
-		next_component_id += 1
-
-	return component_ids
-
-func _group_connected_faces(
-	faces: Array,
-	player: int
-) -> Array:
-	var component_ids := (
-		_get_player_component_ids(player)
-	)
-
-	var groups_by_component: Dictionary = {}
-
-	for face_index in range(faces.size()):
-		var face = faces[face_index]
-
-		if face.is_empty():
-			continue
-
-		var first_position: Vector2i = face[0]
-
-		if not component_ids.has(first_position):
-			continue
-
-		var component_id := int(
-			component_ids[first_position]
-		)
-
-		var face_group: Array = (
-			groups_by_component.get(
-				component_id,
-				[]
-			)
-		)
-
-		face_group.append(face_index)
-		groups_by_component[component_id] = face_group
-
-	var groups: Array = []
-
-	for component_id in groups_by_component:
-		groups.append(
-			groups_by_component[component_id]
-		)
-
-	return groups
-
-func _get_largest_face_from_group(
-	faces: Array,
-	face_group: Array
-) -> Array[Vector2i]:
-	var result: Array[Vector2i] = []
-	var largest_area := 0.0
-
-	for raw_face_index in face_group:
-		var face_index := int(raw_face_index)
-		var face = faces[face_index]
-		var area := _calculate_cycle_area(face)
-
-		if area <= largest_area:
-			continue
-
-		largest_area = area
-		result.clear()
-
-		for grid_position in face:
-			result.append(grid_position)
-
-	return result
-
-
-func _add_boundary_neighbor(
-	boundary_neighbors: Dictionary,
-	first: Vector2i,
-	second: Vector2i
-) -> void:
-	var neighbors: Array = boundary_neighbors.get(
-		first,
-		[]
-	)
-
-	if not neighbors.has(second):
-		neighbors.append(second)
-
-	boundary_neighbors[first] = neighbors
-
-
-func _build_outer_cycle_from_face_group(
-	faces: Array,
-	face_group: Array
-) -> Array[Vector2i]:
-	var edge_counts: Dictionary = {}
-	var edge_positions: Dictionary = {}
-
-	for raw_face_index in face_group:
-		var face_index := int(raw_face_index)
-		var face = faces[face_index]
-
-		for index in range(face.size()):
-			var first: Vector2i = face[index]
-			var second: Vector2i = face[
-				(index + 1) % face.size()
-			]
-
-			var edge_key := _undirected_edge_key(
-				first,
-				second
-			)
-
-			edge_counts[edge_key] = int(
-				edge_counts.get(edge_key, 0)
-			) + 1
-
-			edge_positions[edge_key] = {
-				"first": first,
-				"second": second
-			}
-
-	var boundary_neighbors: Dictionary = {}
-
-	for edge_key in edge_counts:
-		# İki yüzde bulunan bağlantı iç çizgidir.
-		if int(edge_counts[edge_key]) != 1:
-			continue
-
-		var positions = edge_positions[edge_key]
-		var first: Vector2i = positions["first"]
-		var second: Vector2i = positions["second"]
-
-		_add_boundary_neighbor(
-			boundary_neighbors,
-			first,
-			second
-		)
-
-		_add_boundary_neighbor(
-			boundary_neighbors,
-			second,
-			first
-		)
-
-	# Normal bir dış sınırda her köşenin iki komşusu olur.
-	for grid_position in boundary_neighbors:
-		var neighbors: Array = (
-			boundary_neighbors[grid_position]
-		)
-
-		if neighbors.size() != 2:
-			return _get_largest_face_from_group(
-				faces,
-				face_group
-			)
-
-	var used_edges: Dictionary = {}
-	var largest_cycle: Array[Vector2i] = []
-	var largest_area := 0.0
-
-	for raw_start_position in boundary_neighbors:
-		var start_position: Vector2i = (
-			raw_start_position
-		)
-
-		var start_neighbors: Array = (
-			boundary_neighbors[start_position]
-		)
-
-		for raw_first_neighbor in start_neighbors:
-			var first_neighbor: Vector2i = (
-				raw_first_neighbor
-			)
-
-			var starting_edge_key := (
-				_undirected_edge_key(
-					start_position,
-					first_neighbor
-				)
-			)
-
-			if used_edges.has(starting_edge_key):
-				continue
-
-			var candidate_cycle: Array[Vector2i] = [
-				start_position
-			]
-
-			var previous_position := start_position
-			var current_position := first_neighbor
-			var closed := false
-
-			for step in range(MAX_FACE_WALK_STEPS):
-				var current_edge_key := (
-					_undirected_edge_key(
-						previous_position,
-						current_position
-					)
-				)
-
-				if used_edges.has(current_edge_key):
-					break
-
-				used_edges[current_edge_key] = true
-
-				if current_position == start_position:
-					closed = true
-					break
-
-				candidate_cycle.append(
-					current_position
-				)
-
-				var current_neighbors: Array = (
-					boundary_neighbors[
-						current_position
-					]
-				)
-
-				var next_position: Vector2i
-
-				if (
-					current_neighbors[0]
-					== previous_position
-				):
-					next_position = (
-						current_neighbors[1]
-					)
-				else:
-					next_position = (
-						current_neighbors[0]
-					)
-
-				previous_position = current_position
-				current_position = next_position
-
-			if not closed:
-				continue
-
-			if _cycle_crosses_itself(
-				candidate_cycle
-			):
-				continue
-
-			var candidate_area := (
-				_calculate_cycle_area(
-					candidate_cycle
-				)
-			)
-
-			if candidate_area > largest_area:
-				largest_area = candidate_area
-				largest_cycle.clear()
-				largest_cycle.append_array(
-					candidate_cycle
-				)
-
-	return largest_cycle
-
-
 func _find_closed_regions_for_player(
 	player: int
 ) -> Array:
 	var result: Array = []
-	var faces := _find_player_faces(player)
-	var face_groups := _group_connected_faces(
-		faces,
-		player
+	var components := (
+		_find_biconnected_components(player)
 	)
-	for face_group in face_groups:
+
+	for component in components:
 		var outer_cycle := (
-			_build_outer_cycle_from_face_group(
-				faces,
-				face_group
+			_find_component_outer_cycle(
+				component,
+				player
 			)
 		)
 
@@ -879,7 +496,6 @@ func _find_closed_regions_for_player(
 			result.append(outer_cycle)
 
 	return result
-
 
 func _rebuild_closed_cycles() -> void:
 	closed_cycles.clear()
@@ -1212,30 +828,35 @@ func _evaluate_largest_capture_for_player(
 	_capture_cycle(owner, largest_cycle)
 	return true
 
-
 func _evaluate_all_captures(
 	last_player: int
-) -> void:
+) -> bool:
 	var other_player := _get_other_player(last_player)
 	var maximum_checks := closed_cycles.size() + 1
+	var capture_happened := false
 
-	# Önce rakibin daha önce kurduğu çevreleri kontrol ediyoruz.
-	# Böylece rakip çevresine yapılan "intihar hamlesi"
-	# önce yakalanıyor.
-	for check in range(maximum_checks):
-		if not _evaluate_largest_capture_for_player(
-			other_player
-		):
-			break
-
-	# Sonra hamleyi yapan oyuncunun çevrelerini kontrol ediyoruz.
+	# Öncelik hamleyi yapan oyuncudadır.
 	for check in range(maximum_checks):
 		if not _evaluate_largest_capture_for_player(
 			last_player
 		):
 			break
 
-	_recalculate_scores()
+		capture_happened = true
+
+	# Ardından rakibin hâlâ geçerli olan çevrelerini kontrol et.
+	for check in range(maximum_checks):
+		if not _evaluate_largest_capture_for_player(
+			other_player
+		):
+			break
+
+		capture_happened = true
+
+	if capture_happened:
+		_recalculate_scores()
+
+	return capture_happened
 	
 func _is_position_inside_captured_region(
 	grid_position: Vector2i
@@ -1340,13 +961,6 @@ func _recalculate_scores() -> void:
 			graphite_score += region_area
 		else:
 			red_score += region_area
-			
-	print(
-		"Graphite: ",
-		graphite_score,
-		" | Red: ",
-		red_score
-	)
 	
 func _find_surrounded_opponent_points(
 	player: int
@@ -1416,27 +1030,15 @@ func _try_place_point(local_position: Vector2) -> void:
 	if points.has(grid_position):
 		return
 
-	# Gerçekten kazanılmış bir alanın içine yeni nokta konulamaz.
-	if _is_position_inside_captured_region(grid_position):
+	if _is_position_inside_captured_region(
+		grid_position
+	):
 		return
 
-	var placed_player := current_player
+	pending_position = grid_position
+	pending_style_seed = randi()
+	has_pending_move = true
 
-	consecutive_passes = 0
-	
-	points[grid_position] = placed_player
-	point_styles[grid_position] = randi()
-
-	# Yeni nokta bir çevre oluşturduysa, içinde henüz rakip
-	# olmasa bile bu çevreyi gelecekte kontrol etmek için sakla.
-	# Her hamleden sonra iki oyuncunun bütün gerçek
-	# kapalı dış çevreleri baştan hesaplanır.
-	_rebuild_closed_cycles()
-	# Capture artık son konulan noktaya bağlı değil.
-	# Her iki oyuncunun bütün mevcut çevreleri kontrol edilir.
-	_evaluate_all_captures(placed_player)
-	_rebuild_closed_cycles()
-	current_player = _get_other_player(placed_player)
 	queue_redraw()
 	
 func _format_score(score: float) -> String:
@@ -1492,9 +1094,14 @@ func _draw_hud() -> void:
 	var current_player_text: String
 
 	if game_over:
-		current_color = HUD_TEXT_COLOR
-		current_player_text = _get_game_result_text()
+		if graphite_score > red_score:
+			current_color = GRAPHITE_COLOR
+		elif red_score > graphite_score:
+			current_color = RED_COLOR
+		else:
+			current_color = HUD_TEXT_COLOR
 
+		current_player_text = _get_game_result_text()
 	elif current_player == PLAYER_GRAPHITE:
 		current_color = GRAPHITE_COLOR
 		current_player_text = "Sıra: Siyah"
@@ -1522,18 +1129,22 @@ func _draw_hud() -> void:
 	_draw_action_buttons()
 
 func _get_pass_button_rectangle() -> Rect2:
+	if game_over:
+		return Rect2(
+			Vector2(720.0, 68.0),
+			Vector2(70.0, 52.0)
+		)
+
 	return Rect2(
 		Vector2(650.0, 72.0),
-		Vector2(160.0, 45.0)
+		Vector2(140.0, 45.0)
 	)
-
-
-
 	
 func _draw_button(
 	button_rectangle: Rect2,
 	text: String,
-	background_color: Color
+	background_color: Color,
+	font_size: int = 26
 ) -> void:
 	var font := ThemeDB.fallback_font
 
@@ -1550,26 +1161,49 @@ func _draw_button(
 		2.0
 	)
 
+	var text_height := font.get_height(font_size)
+
 	draw_string(
 		font,
 		Vector2(
 			button_rectangle.position.x,
-			button_rectangle.position.y + 32.0
+			button_rectangle.position.y
+			+ (
+				button_rectangle.size.y
+				+ text_height
+			) * 0.5
+			- 4.0
 		),
 		text,
 		HORIZONTAL_ALIGNMENT_CENTER,
 		button_rectangle.size.x,
-		26,
+		font_size,
 		Color.WHITE
 	)
-
 
 func _draw_action_buttons() -> void:
 	if game_over:
 		_draw_button(
 			_get_pass_button_rectangle(),
 			"↻",
-			Color(0.20, 0.50, 0.30, 1.0)
+			Color(0.20, 0.50, 0.30, 1.0),
+			36
+		)
+		return
+
+	if has_pending_move:
+		_draw_button(
+			_get_cancel_button_rectangle(),
+			"×",
+			Color(0.45, 0.45, 0.45, 1.0),
+			34
+		)
+
+		_draw_button(
+			_get_confirm_button_rectangle(),
+			"✓",
+			Color(0.20, 0.55, 0.30, 1.0),
+			32
 		)
 		return
 
@@ -1581,13 +1215,12 @@ func _draw_action_buttons() -> void:
 
 func _get_game_result_text() -> String:
 	if is_equal_approx(graphite_score, red_score):
-		return "Oyun bitti — Berabere"
+		return "Berabere"
 
 	if graphite_score > red_score:
-		return "Oyun bitti — Siyah kazandı"
+		return "Siyah kazandı"
 
-	return "Oyun bitti — Kırmızı kazandı"
-
+	return "Kırmızı kazandı"
 
 func _finish_game() -> void:
 	game_over = true
@@ -1605,21 +1238,41 @@ func _pass_turn() -> void:
 
 	current_player = _get_other_player(current_player)
 	queue_redraw()
-	
+
 func _try_press_action_button(
 	local_position: Vector2
 ) -> bool:
-	if not _get_pass_button_rectangle().has_point(
-		local_position
-	):
+	if game_over:
+		if _get_pass_button_rectangle().has_point(
+			local_position
+		):
+			_restart_game()
+			return true
+
 		return false
 
-	if game_over:
-		_restart_game()
-	else:
-		_pass_turn()
+	if has_pending_move:
+		if _get_cancel_button_rectangle().has_point(
+			local_position
+		):
+			_cancel_pending_move()
+			return true
 
-	return true
+		if _get_confirm_button_rectangle().has_point(
+			local_position
+		):
+			_confirm_pending_move()
+			return true
+
+		return false
+
+	if _get_pass_button_rectangle().has_point(
+		local_position
+	):
+		_pass_turn()
+		return true
+
+	return false
 	
 func _restart_game() -> void:
 	get_tree().reload_current_scene()
@@ -1629,3 +1282,376 @@ func _ready() -> void:
 		(COLUMNS - 1) * CELL_SIZE,
 		BOARD_TOP + (ROWS - 1) * CELL_SIZE
 	)
+
+func _get_point_center(
+	grid_position: Vector2i
+) -> Vector2:
+	return Vector2(
+		grid_position.x * CELL_SIZE,
+		BOARD_TOP + grid_position.y * CELL_SIZE
+	)
+
+
+func _draw_move_indicators() -> void:
+	if has_last_move:
+		draw_circle(
+			_get_point_center(last_placed_position),
+			15.0,
+			Color(0.15, 0.45, 0.75, 0.75),
+			false,
+			3.0,
+			true
+		)
+
+	if not has_pending_move:
+		return
+
+	var pending_color: Color
+
+	if current_player == PLAYER_GRAPHITE:
+		pending_color = GRAPHITE_COLOR
+	else:
+		pending_color = RED_COLOR
+
+	var center := _get_point_center(
+		pending_position
+	)
+
+	_draw_pencil_point(
+		center,
+		pending_color,
+		pending_style_seed
+	)
+
+	draw_circle(
+		center,
+		19.0,
+		pending_color,
+		false,
+		4.0,
+		true
+	)
+
+func _get_cancel_button_rectangle() -> Rect2:
+	return Rect2(
+		Vector2(580.0, 72.0),
+		Vector2(95.0, 45.0)
+	)
+
+
+func _get_confirm_button_rectangle() -> Rect2:
+	return Rect2(
+		Vector2(695.0, 72.0),
+		Vector2(95.0, 45.0)
+	)
+	
+func _confirm_pending_move() -> void:
+	if not has_pending_move:
+		return
+
+	var grid_position := pending_position
+	var placed_player := current_player
+
+	consecutive_passes = 0
+
+	points[grid_position] = placed_player
+	point_styles[grid_position] = pending_style_seed
+
+	last_placed_position = grid_position
+	has_last_move = true
+
+	has_pending_move = false
+	pending_position = Vector2i(-1, -1)
+
+	_rebuild_closed_cycles()
+
+	var capture_happened := (
+		_evaluate_all_captures(placed_player)
+	)
+
+	# Capture sonrasında bazı noktalar pasifleştiği için
+	# yalnızca o zaman çevreleri tekrar oluşturuyoruz.
+	if capture_happened:
+		_rebuild_closed_cycles()
+
+	current_player = _get_other_player(
+		placed_player
+	)
+
+	queue_redraw()
+	
+func _cancel_pending_move() -> void:
+	has_pending_move = false
+	pending_position = Vector2i(-1, -1)
+	queue_redraw()
+	
+func _search_biconnected_components(
+	current: Vector2i,
+	player: int,
+	search_state: Dictionary
+) -> void:
+	var discovery: Dictionary = (
+		search_state["discovery"]
+	)
+
+	var low: Dictionary = search_state["low"]
+	var parents: Dictionary = search_state["parents"]
+	var edge_stack: Array = search_state["edge_stack"]
+
+	search_state["time"] = int(
+		search_state["time"]
+	) + 1
+
+	var current_time := int(search_state["time"])
+
+	discovery[current] = current_time
+	low[current] = current_time
+
+	var no_parent := Vector2i(-1000, -1000)
+	var parent: Vector2i = parents.get(
+		current,
+		no_parent
+	)
+
+	for neighbor in _get_planar_neighbors(
+		current,
+		player
+	):
+		if not discovery.has(neighbor):
+			parents[neighbor] = current
+			edge_stack.append([
+				current,
+				neighbor
+			])
+
+			_search_biconnected_components(
+				neighbor,
+				player,
+				search_state
+			)
+
+			low[current] = mini(
+				int(low[current]),
+				int(low[neighbor])
+			)
+
+			# Bu bağlantının altında bağımsız bir
+			# kapalı döngü grubu tamamlandı.
+			if int(low[neighbor]) >= int(
+				discovery[current]
+			):
+				var component := (
+					_pop_biconnected_component(
+						edge_stack,
+						current,
+						neighbor
+					)
+				)
+
+				if component.size() >= 3:
+					var components: Array = (
+						search_state["components"]
+					)
+
+					components.append(component)
+					search_state["components"] = components
+
+		elif (
+			neighbor != parent
+			and int(discovery[neighbor])
+			< int(discovery[current])
+		):
+			low[current] = mini(
+				int(low[current]),
+				int(discovery[neighbor])
+			)
+
+			edge_stack.append([
+				current,
+				neighbor
+			])
+
+	search_state["discovery"] = discovery
+	search_state["low"] = low
+	search_state["parents"] = parents
+	search_state["edge_stack"] = edge_stack
+	
+func _find_biconnected_components(
+	player: int
+) -> Array:
+	var search_state: Dictionary = {
+		"time": 0,
+		"discovery": {},
+		"low": {},
+		"parents": {},
+		"edge_stack": [],
+		"components": []
+	}
+
+	for raw_position in points:
+		var grid_position: Vector2i = raw_position
+
+		if not _is_active_player_point(
+			grid_position,
+			player
+		):
+			continue
+
+		var discovery: Dictionary = (
+			search_state["discovery"]
+		)
+
+		if discovery.has(grid_position):
+			continue
+
+		_search_biconnected_components(
+			grid_position,
+			player,
+			search_state
+		)
+
+	return search_state["components"]
+	
+func _get_component_neighbors(
+	grid_position: Vector2i,
+	player: int,
+	component_lookup: Dictionary
+) -> Array[Vector2i]:
+	var component_neighbors: Array[Vector2i] = []
+
+	for neighbor in _get_planar_neighbors(
+		grid_position,
+		player
+	):
+		if component_lookup.has(neighbor):
+			component_neighbors.append(neighbor)
+
+	return _sort_neighbors_by_angle(
+		grid_position,
+		component_neighbors
+	)
+
+func _walk_component_face(
+	start_from: Vector2i,
+	start_to: Vector2i,
+	player: int,
+	component_lookup: Dictionary,
+	visited_edges: Dictionary
+) -> Array[Vector2i]:
+	var face: Array[Vector2i] = []
+	var from_position := start_from
+	var to_position := start_to
+
+	for step in range(MAX_FACE_WALK_STEPS):
+		var edge_key := _directed_edge_key(
+			from_position,
+			to_position
+		)
+
+		if visited_edges.has(edge_key):
+			return []
+
+		visited_edges[edge_key] = true
+		face.append(from_position)
+
+		var neighbors := _get_component_neighbors(
+			to_position,
+			player,
+			component_lookup
+		)
+
+		if neighbors.size() < 2:
+			return []
+
+		var incoming_index := neighbors.find(
+			from_position
+		)
+
+		if incoming_index < 0:
+			return []
+
+		var next_index := (
+			incoming_index - 1
+			+ neighbors.size()
+		) % neighbors.size()
+
+		var next_position := neighbors[next_index]
+
+		from_position = to_position
+		to_position = next_position
+
+		if (
+			from_position == start_from
+			and to_position == start_to
+		):
+			return face
+
+	return []
+
+func _find_component_outer_cycle(
+	component: Array,
+	player: int
+) -> Array[Vector2i]:
+	var component_lookup: Dictionary = {}
+
+	for raw_position in component:
+		var grid_position: Vector2i = raw_position
+		component_lookup[grid_position] = true
+
+	var visited_edges: Dictionary = {}
+	var largest_cycle: Array[Vector2i] = []
+	var largest_area := 0.0
+
+	for raw_position in component:
+		var grid_position: Vector2i = raw_position
+
+		for neighbor in _get_component_neighbors(
+			grid_position,
+			player,
+			component_lookup
+		):
+			var edge_key := _directed_edge_key(
+				grid_position,
+				neighbor
+			)
+
+			if visited_edges.has(edge_key):
+				continue
+
+			var candidate_cycle := (
+				_walk_component_face(
+					grid_position,
+					neighbor,
+					player,
+					component_lookup,
+					visited_edges
+				)
+			)
+
+			if candidate_cycle.size() < 3:
+				continue
+
+			if _cycle_has_repeated_points(
+				candidate_cycle
+			):
+				continue
+
+			if _cycle_crosses_itself(
+				candidate_cycle
+			):
+				continue
+
+			var candidate_area := (
+				_calculate_cycle_area(
+					candidate_cycle
+				)
+			)
+
+			if candidate_area > largest_area:
+				largest_area = candidate_area
+				largest_cycle.clear()
+				largest_cycle.append_array(
+					candidate_cycle
+				)
+
+	return largest_cycle
