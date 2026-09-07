@@ -1,5 +1,12 @@
 extends Control
 
+const GameGeometry := preload(
+	"res://scripts/game_geometry.gd"
+)
+
+const CaptureDetectorScript := preload(
+	"res://scripts/capture_detector.gd"
+)
 
 const COLUMNS := 15
 const ROWS := 21
@@ -17,11 +24,9 @@ const HUD_FONT_SIZE := 34
 
 const GRID_WIDTH := 2.0
 const POINT_STROKES := 9
-const MAX_FACE_WALK_STEPS := COLUMNS * ROWS * 8
 const HUD_HEIGHT := 130.0
 const HUD_BOARD_GAP := 35.0
 const BOARD_TOP := HUD_HEIGHT + HUD_BOARD_GAP
-const GEOMETRY_EPSILON := 0.001
 
 var current_player := PLAYER_GRAPHITE
 var points: Dictionary = {}
@@ -33,6 +38,7 @@ var graphite_score := 0.0
 var red_score := 0.0
 var consecutive_passes := 0
 var game_over := false
+var capture_detector
 
 var pending_position := Vector2i(-1, -1)
 var pending_style_seed := 0
@@ -202,249 +208,7 @@ func _draw_pencil_point(
 			rng.randf_range(1.8, 3.5),
 			true
 		)
-
-func _is_inside_board(grid_position: Vector2i) -> bool:
-	return (
-		grid_position.x >= 0
-		and grid_position.x < COLUMNS
-		and grid_position.y >= 0
-		and grid_position.y < ROWS
-	)
-
-
-func _get_same_player_neighbors(
-	grid_position: Vector2i,
-	player: int
-) -> Array[Vector2i]:
-	var neighbors: Array[Vector2i] = []
-
-	for row_offset in range(-1, 2):
-		for column_offset in range(-1, 2):
-			if column_offset == 0 and row_offset == 0:
-				continue
-
-			var neighbor_position := grid_position + Vector2i(
-				column_offset,
-				row_offset
-			)
-
-			if not _is_inside_board(neighbor_position):
-				continue
-				
-			if captured_point_owners.has(neighbor_position):
-				continue
-
-			if points.get(neighbor_position, -1) == player:
-				neighbors.append(neighbor_position)
-
-	return neighbors
-
-func _is_active_player_point(
-	grid_position: Vector2i,
-	player: int
-) -> bool:
-	return (
-		_is_inside_board(grid_position)
-		and not captured_point_owners.has(grid_position)
-		and int(points.get(grid_position, -1)) == player
-	)
-
-
-func _get_neighbor_angle(
-	center: Vector2i,
-	neighbor: Vector2i
-) -> float:
-	var direction := neighbor - center
-
-	return atan2(
-		float(direction.y),
-		float(direction.x)
-	)
-
-
-func _sort_neighbors_by_angle(
-	center: Vector2i,
-	neighbors: Array[Vector2i]
-) -> Array[Vector2i]:
-	var sorted_neighbors: Array[Vector2i] = []
-
-	for neighbor in neighbors:
-		var neighbor_angle := _get_neighbor_angle(
-			center,
-			neighbor
-		)
-
-		var insert_index := 0
-
-		while insert_index < sorted_neighbors.size():
-			var existing_neighbor := (
-				sorted_neighbors[insert_index]
-			)
-
-			var existing_angle := _get_neighbor_angle(
-				center,
-				existing_neighbor
-			)
-
-			if neighbor_angle < existing_angle:
-				break
-
-			insert_index += 1
-
-		sorted_neighbors.insert(
-			insert_index,
-			neighbor
-		)
-
-	return sorted_neighbors
-
-
-func _get_planar_neighbors(
-	grid_position: Vector2i,
-	player: int
-) -> Array[Vector2i]:
-	var planar_neighbors: Array[Vector2i] = []
-
-	for neighbor in _get_same_player_neighbors(
-		grid_position,
-		player
-	):
-		var column_offset := (
-			neighbor.x - grid_position.x
-		)
-
-		var row_offset := (
-			neighbor.y - grid_position.y
-		)
-
-		var is_diagonal := (
-			absi(column_offset) == 1
-			and absi(row_offset) == 1
-		)
-
-		if is_diagonal:
-			var horizontal_corner := (
-				grid_position
-				+ Vector2i(column_offset, 0)
-			)
-
-			var vertical_corner := (
-				grid_position
-				+ Vector2i(0, row_offset)
-			)
-
-			# Karenin dört köşesi de aynı renkteyse,
-			# çapraz çizgiler yerine dış kareyi kullan.
-			if (
-				_is_active_player_point(
-					horizontal_corner,
-					player
-				)
-				and _is_active_player_point(
-					vertical_corner,
-					player
-				)
-			):
-				continue
-
-		planar_neighbors.append(neighbor)
-
-	return _sort_neighbors_by_angle(
-		grid_position,
-		planar_neighbors
-	)
-
-func _edge_matches(
-	edge: Array,
-	first: Vector2i,
-	second: Vector2i
-) -> bool:
-	return (
-		(
-			edge[0] == first
-			and edge[1] == second
-		)
-		or
-		(
-			edge[0] == second
-			and edge[1] == first
-		)
-	)
-
-
-func _pop_biconnected_component(
-	edge_stack: Array,
-	stop_first: Vector2i,
-	stop_second: Vector2i
-) -> Array[Vector2i]:
-	var component_positions: Dictionary = {}
-
-	while not edge_stack.is_empty():
-		var edge: Array = edge_stack.pop_back()
-
-		component_positions[edge[0]] = true
-		component_positions[edge[1]] = true
-
-		if _edge_matches(
-			edge,
-			stop_first,
-			stop_second
-		):
-			break
-
-	var component: Array[Vector2i] = []
-
-	for raw_position in component_positions:
-		var grid_position: Vector2i = raw_position
-		component.append(grid_position)
-
-	return component
-
-func _directed_edge_key(
-	first: Vector2i,
-	second: Vector2i
-) -> String:
-	return "%d,%d>%d,%d" % [
-		first.x,
-		first.y,
-		second.x,
-		second.y
-	]
-
-func _cycle_has_repeated_points(
-	cycle: Array
-) -> bool:
-	var visited_positions: Dictionary = {}
-
-	for grid_position in cycle:
-		if visited_positions.has(grid_position):
-			return true
-
-		visited_positions[grid_position] = true
-
-	return false
-
-func _find_closed_regions_for_player(
-	player: int
-) -> Array:
-	var result: Array = []
-	var components := (
-		_find_biconnected_components(player)
-	)
-
-	for component in components:
-		var outer_cycle := (
-			_find_component_outer_cycle(
-				component,
-				player
-			)
-		)
-
-		if outer_cycle.size() >= 3:
-			result.append(outer_cycle)
-
-	return result
-
+		
 func _rebuild_closed_cycles() -> void:
 	closed_cycles.clear()
 
@@ -454,8 +218,12 @@ func _rebuild_closed_cycles() -> void:
 	]
 
 	for player in players:
-		var player_cycles := (
-			_find_closed_regions_for_player(player)
+		var player_cycles: Array = (
+			capture_detector.find_closed_regions(
+				points,
+				captured_point_owners,
+				player
+			)
 		)
 
 		for cycle in player_cycles:
@@ -465,163 +233,11 @@ func _rebuild_closed_cycles() -> void:
 					"cycle": cycle.duplicate()
 				}
 			)
-
-func _cross_product(
-	first: Vector2i,
-	second: Vector2i,
-	third: Vector2i
-) -> int:
-	return (
-		(second.x - first.x)
-		* (third.y - first.y)
-		- (second.y - first.y)
-		* (third.x - first.x)
-	)
-
-
-func _segments_cross(
-	first_start: Vector2i,
-	first_end: Vector2i,
-	second_start: Vector2i,
-	second_end: Vector2i
-) -> bool:
-	# Ortak noktada birleşmek normaldir; bu kesişme sayılmaz.
-	if (
-		first_start == second_start
-		or first_start == second_end
-		or first_end == second_start
-		or first_end == second_end
-	):
-		return false
-
-	var first_side := _cross_product(
-		first_start,
-		first_end,
-		second_start
-	)
-
-	var second_side := _cross_product(
-		first_start,
-		first_end,
-		second_end
-	)
-
-	var third_side := _cross_product(
-		second_start,
-		second_end,
-		first_start
-	)
-
-	var fourth_side := _cross_product(
-		second_start,
-		second_end,
-		first_end
-	)
-
-	return (
-		(
-			(first_side > 0 and second_side < 0)
-			or (first_side < 0 and second_side > 0)
-		)
-		and
-		(
-			(third_side > 0 and fourth_side < 0)
-			or (third_side < 0 and fourth_side > 0)
-		)
-	)
-
-
-func _cycle_crosses_itself(cycle: Array) -> bool:
-	for first_index in range(cycle.size()):
-		var first_start = cycle[first_index]
-		var first_end = cycle[
-			(first_index + 1) % cycle.size()
-		]
-
-		for second_index in range(
-			first_index + 1,
-			cycle.size()
-		):
-			# Yan yana duran çizgiler aynı köşede birleşebilir.
-			if second_index == first_index + 1:
-				continue
-
-			if (
-				first_index == 0
-				and second_index == cycle.size() - 1
-			):
-				continue
-
-			var second_start = cycle[second_index]
-			var second_end = cycle[
-				(second_index + 1) % cycle.size()
-			]
-
-			if _segments_cross(
-				first_start,
-				first_end,
-				second_start,
-				second_end
-			):
-				return true
-
-	return false
-
-func _get_cycle_center(cycle: Array) -> Vector2:
-	var center := Vector2.ZERO
-
-	for grid_position in cycle:
-		center += Vector2(
-			grid_position.x,
-			grid_position.y
-		)
-
-	return center / cycle.size()
-
-
-func _is_point_inside_cycle(
-	point: Vector2,
-	cycle: Array
-) -> bool:
-	var inside := false
-	var previous_index := cycle.size() - 1
-
-	for current_index in range(cycle.size()):
-		var current := Vector2(
-			cycle[current_index].x,
-			cycle[current_index].y
-		)
-
-		var previous := Vector2(
-			cycle[previous_index].x,
-			cycle[previous_index].y
-		)
-
-		var crosses_horizontal_ray := (
-			(current.y > point.y)
-			!= (previous.y > point.y)
-		)
-
-		if crosses_horizontal_ray:
-			var intersection_x := (
-				(previous.x - current.x)
-				* (point.y - current.y)
-				/ (previous.y - current.y)
-				+ current.x
-			)
-
-			if point.x < intersection_x:
-				inside = not inside
-
-		previous_index = current_index
-
-	return inside
-
-
+			
 func _remove_regions_inside_cycle(
 	new_cycle: Array
 ) -> void:
-	var new_area := _calculate_cycle_area(
+	var new_area := GameGeometry.calculate_cycle_area(
 		new_cycle
 	)
 
@@ -634,18 +250,18 @@ func _remove_regions_inside_cycle(
 			captured_regions[region_index]["cycle"]
 		)
 
-		var old_area := _calculate_cycle_area(
+		var old_area := GameGeometry.calculate_cycle_area(
 			old_cycle
 		)
 
 		if (
 			old_area
 			> new_area
-			+ GEOMETRY_EPSILON
+			+ GameGeometry.EPSILON
 		):
 			continue
 
-		if _is_cycle_inside_cycle(
+		if GameGeometry.is_cycle_inside_cycle(
 			old_cycle,
 			new_cycle
 		):
@@ -686,7 +302,7 @@ func _cycle_has_new_content(
 			grid_position.y
 		)
 
-		if not _is_point_inside_cycle(
+		if not GameGeometry.is_point_inside_cycle(
 			point_position,
 			cycle
 		):
@@ -734,7 +350,7 @@ func _capture_cycle(
 			grid_position.y
 		)
 
-		if _is_point_inside_cycle(
+		if GameGeometry.is_point_inside_cycle(
 			point_position,
 			cycle
 		):
@@ -772,7 +388,7 @@ func _evaluate_largest_capture_for_player(
 		if not _cycle_has_new_content(owner, cycle):
 			continue
 
-		var area := _calculate_cycle_area(cycle)
+		var area := GameGeometry.calculate_cycle_area(cycle)
 
 		if area > largest_area:
 			largest_area = area
@@ -826,7 +442,7 @@ func _is_position_inside_captured_region(
 	for region in captured_regions:
 		var cycle = region["cycle"]
 
-		if _is_point_inside_cycle(
+		if GameGeometry.is_point_inside_cycle(
 			point_position,
 			cycle
 		):
@@ -834,22 +450,6 @@ func _is_position_inside_captured_region(
 
 	return false
 
-func _calculate_cycle_area(cycle: Array) -> float:
-	if cycle.size() < 3:
-		return 0.0
-
-	var double_area := 0.0
-
-	for index in range(cycle.size()):
-		var current = cycle[index]
-		var next = cycle[(index + 1) % cycle.size()]
-
-		double_area += float(
-			current.x * next.y
-			- next.x * current.y
-		)
-
-	return absf(double_area) * 0.5
 
 func _recalculate_scores() -> void:
 	graphite_score = 0.0
@@ -858,7 +458,7 @@ func _recalculate_scores() -> void:
 	for region in captured_regions:
 		var owner := int(region["owner"])
 		var cycle = region["cycle"]
-		var region_area := _calculate_cycle_area(cycle)
+		var region_area := GameGeometry.calculate_cycle_area(cycle)
 
 		if owner == PLAYER_GRAPHITE:
 			graphite_score += region_area
@@ -1162,6 +762,11 @@ func _restart_game() -> void:
 	get_tree().reload_current_scene()
 
 func _ready() -> void:
+	capture_detector = CaptureDetectorScript.new(
+		COLUMNS,
+		ROWS
+	)
+
 	custom_minimum_size = Vector2(
 		(COLUMNS - 1) * CELL_SIZE,
 		BOARD_TOP + (ROWS - 1) * CELL_SIZE
@@ -1268,367 +873,3 @@ func _cancel_pending_move() -> void:
 	has_pending_move = false
 	pending_position = Vector2i(-1, -1)
 	queue_redraw()
-	
-func _search_biconnected_components(
-	current: Vector2i,
-	player: int,
-	search_state: Dictionary
-) -> void:
-	var discovery: Dictionary = (
-		search_state["discovery"]
-	)
-
-	var low: Dictionary = search_state["low"]
-	var parents: Dictionary = search_state["parents"]
-	var edge_stack: Array = search_state["edge_stack"]
-
-	search_state["time"] = int(
-		search_state["time"]
-	) + 1
-
-	var current_time := int(search_state["time"])
-
-	discovery[current] = current_time
-	low[current] = current_time
-
-	var no_parent := Vector2i(-1000, -1000)
-	var parent: Vector2i = parents.get(
-		current,
-		no_parent
-	)
-
-	for neighbor in _get_planar_neighbors(
-		current,
-		player
-	):
-		if not discovery.has(neighbor):
-			parents[neighbor] = current
-			edge_stack.append([
-				current,
-				neighbor
-			])
-
-			_search_biconnected_components(
-				neighbor,
-				player,
-				search_state
-			)
-
-			low[current] = mini(
-				int(low[current]),
-				int(low[neighbor])
-			)
-
-			# Bu bağlantının altında bağımsız bir
-			# kapalı döngü grubu tamamlandı.
-			if int(low[neighbor]) >= int(
-				discovery[current]
-			):
-				var component := (
-					_pop_biconnected_component(
-						edge_stack,
-						current,
-						neighbor
-					)
-				)
-
-				if component.size() >= 3:
-					var components: Array = (
-						search_state["components"]
-					)
-
-					components.append(component)
-					search_state["components"] = components
-
-		elif (
-			neighbor != parent
-			and int(discovery[neighbor])
-			< int(discovery[current])
-		):
-			low[current] = mini(
-				int(low[current]),
-				int(discovery[neighbor])
-			)
-
-			edge_stack.append([
-				current,
-				neighbor
-			])
-
-	search_state["discovery"] = discovery
-	search_state["low"] = low
-	search_state["parents"] = parents
-	search_state["edge_stack"] = edge_stack
-	
-func _find_biconnected_components(
-	player: int
-) -> Array:
-	var search_state: Dictionary = {
-		"time": 0,
-		"discovery": {},
-		"low": {},
-		"parents": {},
-		"edge_stack": [],
-		"components": []
-	}
-
-	for raw_position in points:
-		var grid_position: Vector2i = raw_position
-
-		if not _is_active_player_point(
-			grid_position,
-			player
-		):
-			continue
-
-		var discovery: Dictionary = (
-			search_state["discovery"]
-		)
-
-		if discovery.has(grid_position):
-			continue
-
-		_search_biconnected_components(
-			grid_position,
-			player,
-			search_state
-		)
-
-	return search_state["components"]
-	
-func _get_component_neighbors(
-	grid_position: Vector2i,
-	player: int,
-	component_lookup: Dictionary
-) -> Array[Vector2i]:
-	var component_neighbors: Array[Vector2i] = []
-
-	for neighbor in _get_planar_neighbors(
-		grid_position,
-		player
-	):
-		if component_lookup.has(neighbor):
-			component_neighbors.append(neighbor)
-
-	return _sort_neighbors_by_angle(
-		grid_position,
-		component_neighbors
-	)
-
-func _walk_component_face(
-	start_from: Vector2i,
-	start_to: Vector2i,
-	player: int,
-	component_lookup: Dictionary,
-	visited_edges: Dictionary
-) -> Array[Vector2i]:
-	var face: Array[Vector2i] = []
-	var from_position := start_from
-	var to_position := start_to
-
-	for step in range(MAX_FACE_WALK_STEPS):
-		var edge_key := _directed_edge_key(
-			from_position,
-			to_position
-		)
-
-		if visited_edges.has(edge_key):
-			return []
-
-		visited_edges[edge_key] = true
-		face.append(from_position)
-
-		var neighbors := _get_component_neighbors(
-			to_position,
-			player,
-			component_lookup
-		)
-
-		if neighbors.size() < 2:
-			return []
-
-		var incoming_index := neighbors.find(
-			from_position
-		)
-
-		if incoming_index < 0:
-			return []
-
-		var next_index := (
-			incoming_index - 1
-			+ neighbors.size()
-		) % neighbors.size()
-
-		var next_position := neighbors[next_index]
-
-		from_position = to_position
-		to_position = next_position
-
-		if (
-			from_position == start_from
-			and to_position == start_to
-		):
-			return face
-
-	return []
-
-func _find_component_outer_cycle(
-	component: Array,
-	player: int
-) -> Array[Vector2i]:
-	var component_lookup: Dictionary = {}
-
-	for raw_position in component:
-		var grid_position: Vector2i = raw_position
-		component_lookup[grid_position] = true
-
-	var visited_edges: Dictionary = {}
-	var largest_cycle: Array[Vector2i] = []
-	var largest_area := 0.0
-
-	for raw_position in component:
-		var grid_position: Vector2i = raw_position
-
-		for neighbor in _get_component_neighbors(
-			grid_position,
-			player,
-			component_lookup
-		):
-			var edge_key := _directed_edge_key(
-				grid_position,
-				neighbor
-			)
-
-			if visited_edges.has(edge_key):
-				continue
-
-			var candidate_cycle := (
-				_walk_component_face(
-					grid_position,
-					neighbor,
-					player,
-					component_lookup,
-					visited_edges
-				)
-			)
-
-			if candidate_cycle.size() < 3:
-				continue
-
-			if _cycle_has_repeated_points(
-				candidate_cycle
-			):
-				continue
-
-			if _cycle_crosses_itself(
-				candidate_cycle
-			):
-				continue
-
-			var candidate_area := (
-				_calculate_cycle_area(
-					candidate_cycle
-				)
-			)
-
-			if candidate_area > largest_area:
-				largest_area = candidate_area
-				largest_cycle.clear()
-				largest_cycle.append_array(
-					candidate_cycle
-				)
-
-	return largest_cycle
-	
-func _is_point_on_cycle_boundary(
-	point: Vector2,
-	cycle: Array
-) -> bool:
-	for index in range(cycle.size()):
-		var first := Vector2(
-			cycle[index].x,
-			cycle[index].y
-		)
-
-		var next_index := (
-			index + 1
-		) % cycle.size()
-
-		var second := Vector2(
-			cycle[next_index].x,
-			cycle[next_index].y
-		)
-
-		var edge := second - first
-		var point_direction := point - first
-
-		if absf(edge.cross(point_direction)) > GEOMETRY_EPSILON:
-			continue
-
-		var projection := point_direction.dot(edge)
-
-		if projection < -GEOMETRY_EPSILON:
-			continue
-
-		if (
-			projection
-			> edge.length_squared()
-			+ GEOMETRY_EPSILON
-		):
-			continue
-
-		return true
-
-	return false
-	
-func _is_point_inside_or_on_cycle(
-	point: Vector2,
-	cycle: Array
-) -> bool:
-	return (
-		_is_point_inside_cycle(point, cycle)
-		or _is_point_on_cycle_boundary(
-			point,
-			cycle
-		)
-	)
-	
-func _is_cycle_inside_cycle(
-	inner_cycle: Array,
-	outer_cycle: Array
-) -> bool:
-	for index in range(inner_cycle.size()):
-		var current := Vector2(
-			inner_cycle[index].x,
-			inner_cycle[index].y
-		)
-
-		var next_index := (
-			index + 1
-		) % inner_cycle.size()
-
-		var next := Vector2(
-			inner_cycle[next_index].x,
-			inner_cycle[next_index].y
-		)
-
-		if not _is_point_inside_or_on_cycle(
-			current,
-			outer_cycle
-		):
-			return false
-
-		# Kenarın ortasını da kontrol ediyoruz.
-		# Bu, girintili dış bölgelerde daha güvenlidir.
-		var edge_middle := (
-			current + next
-		) * 0.5
-
-		if not _is_point_inside_or_on_cycle(
-			edge_middle,
-			outer_cycle
-		):
-			return false
-
-	return true
-	
