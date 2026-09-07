@@ -18,7 +18,6 @@ const HUD_FONT_SIZE := 34
 const GRID_WIDTH := 2.0
 const POINT_STROKES := 9
 const MAX_FACE_WALK_STEPS := COLUMNS * ROWS * 8
-const FACE_AREA_EPSILON := 0.001
 const HUD_HEIGHT := 130.0
 const HUD_BOARD_GAP := 35.0
 const BOARD_TOP := HUD_HEIGHT + HUD_BOARD_GAP
@@ -85,7 +84,6 @@ func _draw() -> void:
 			point_styles[grid_position]
 		)
 	_draw_move_indicators()
-	_draw_hud()
 	_draw_hud()
 	
 func _draw_captured_regions() -> void:
@@ -411,57 +409,6 @@ func _directed_edge_key(
 		second.x,
 		second.y
 	]
-
-
-func _undirected_edge_key(
-	first: Vector2i,
-	second: Vector2i
-) -> String:
-	var first_comes_first := (
-		first.x < second.x
-		or (
-			first.x == second.x
-			and first.y <= second.y
-		)
-	)
-
-	if first_comes_first:
-		return "%d,%d-%d,%d" % [
-			first.x,
-			first.y,
-			second.x,
-			second.y
-		]
-
-	return "%d,%d-%d,%d" % [
-		second.x,
-		second.y,
-		first.x,
-		first.y
-	]
-
-
-func _calculate_signed_cycle_area(
-	cycle: Array
-) -> float:
-	if cycle.size() < 3:
-		return 0.0
-
-	var double_area := 0.0
-
-	for index in range(cycle.size()):
-		var current = cycle[index]
-		var next = cycle[
-			(index + 1) % cycle.size()
-		]
-
-		double_area += float(
-			current.x * next.y
-			- next.x * current.y
-		)
-
-	return double_area * 0.5
-
 
 func _cycle_has_repeated_points(
 	cycle: Array
@@ -877,60 +824,6 @@ func _is_position_inside_captured_region(
 
 	return false
 
-func _get_reachable_positions(player: int) -> Dictionary:
-	var reachable: Dictionary = {}
-	var positions_to_visit: Array[Vector2i] = [
-		Vector2i(-1, -1)
-	]
-	var current_index := 0
-
-	var directions: Array[Vector2i] = [
-		Vector2i(0, -1),
-		Vector2i(1, 0),
-		Vector2i(0, 1),
-		Vector2i(-1, 0)
-	]
-
-	reachable[Vector2i(-1, -1)] = true
-
-	while current_index < positions_to_visit.size():
-		var current_position := positions_to_visit[current_index]
-		current_index += 1
-
-		for direction in directions:
-			var neighbor_position := current_position + direction
-
-			if neighbor_position.x < -1:
-				continue
-
-			if neighbor_position.x > COLUMNS:
-				continue
-
-			if neighbor_position.y < -1:
-				continue
-
-			if neighbor_position.y > ROWS:
-				continue
-
-			if reachable.has(neighbor_position):
-				continue
-
-			if _is_inside_board(neighbor_position):
-				var is_active_player_point: bool = (
-					not captured_point_owners.has(neighbor_position)
-					and int(
-						points.get(neighbor_position, -1)
-					) == player
-				)
-
-				if is_active_player_point:
-					continue
-
-			reachable[neighbor_position] = true
-			positions_to_visit.append(neighbor_position)
-
-	return reachable
-
 func _calculate_cycle_area(cycle: Array) -> float:
 	if cycle.size() < 3:
 		return 0.0
@@ -962,25 +855,6 @@ func _recalculate_scores() -> void:
 		else:
 			red_score += region_area
 	
-func _find_surrounded_opponent_points(
-	player: int
-) -> Array[Vector2i]:
-	var reachable := _get_reachable_positions(player)
-	var surrounded_points: Array[Vector2i] = []
-
-	for grid_position in points:
-		if int(points[grid_position]) == player:
-			continue
-
-		# Daha önce yakalanmış nokta yeni kazanım değildir.
-		if captured_point_owners.has(grid_position):
-			continue
-
-		if not reachable.has(grid_position):
-			surrounded_points.append(grid_position)
-
-	return surrounded_points
-
 func _gui_input(event: InputEvent) -> void:
 	if (
 		event is InputEventMouseButton
