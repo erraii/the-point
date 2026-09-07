@@ -21,6 +21,7 @@ const MAX_FACE_WALK_STEPS := COLUMNS * ROWS * 8
 const HUD_HEIGHT := 130.0
 const HUD_BOARD_GAP := 35.0
 const BOARD_TOP := HUD_HEIGHT + HUD_BOARD_GAP
+const GEOMETRY_EPSILON := 0.001
 
 var current_player := PLAYER_GRAPHITE
 var points: Dictionary = {}
@@ -620,7 +621,9 @@ func _is_point_inside_cycle(
 func _remove_regions_inside_cycle(
 	new_cycle: Array
 ) -> void:
-	var new_area := _calculate_cycle_area(new_cycle)
+	var new_area := _calculate_cycle_area(
+		new_cycle
+	)
 
 	for region_index in range(
 		captured_regions.size() - 1,
@@ -630,18 +633,25 @@ func _remove_regions_inside_cycle(
 		var old_cycle = (
 			captured_regions[region_index]["cycle"]
 		)
-		var old_area := _calculate_cycle_area(old_cycle)
 
-		if old_area >= new_area:
+		var old_area := _calculate_cycle_area(
+			old_cycle
+		)
+
+		if (
+			old_area
+			> new_area
+			+ GEOMETRY_EPSILON
+		):
 			continue
 
-		var old_center := _get_cycle_center(old_cycle)
-
-		if _is_point_inside_cycle(
-			old_center,
+		if _is_cycle_inside_cycle(
+			old_cycle,
 			new_cycle
 		):
-			captured_regions.remove_at(region_index)
+			captured_regions.remove_at(
+				region_index
+			)
 			
 func _get_other_player(player: int) -> int:
 	if player == PLAYER_GRAPHITE:
@@ -1529,3 +1539,96 @@ func _find_component_outer_cycle(
 				)
 
 	return largest_cycle
+	
+func _is_point_on_cycle_boundary(
+	point: Vector2,
+	cycle: Array
+) -> bool:
+	for index in range(cycle.size()):
+		var first := Vector2(
+			cycle[index].x,
+			cycle[index].y
+		)
+
+		var next_index := (
+			index + 1
+		) % cycle.size()
+
+		var second := Vector2(
+			cycle[next_index].x,
+			cycle[next_index].y
+		)
+
+		var edge := second - first
+		var point_direction := point - first
+
+		if absf(edge.cross(point_direction)) > GEOMETRY_EPSILON:
+			continue
+
+		var projection := point_direction.dot(edge)
+
+		if projection < -GEOMETRY_EPSILON:
+			continue
+
+		if (
+			projection
+			> edge.length_squared()
+			+ GEOMETRY_EPSILON
+		):
+			continue
+
+		return true
+
+	return false
+	
+func _is_point_inside_or_on_cycle(
+	point: Vector2,
+	cycle: Array
+) -> bool:
+	return (
+		_is_point_inside_cycle(point, cycle)
+		or _is_point_on_cycle_boundary(
+			point,
+			cycle
+		)
+	)
+	
+func _is_cycle_inside_cycle(
+	inner_cycle: Array,
+	outer_cycle: Array
+) -> bool:
+	for index in range(inner_cycle.size()):
+		var current := Vector2(
+			inner_cycle[index].x,
+			inner_cycle[index].y
+		)
+
+		var next_index := (
+			index + 1
+		) % inner_cycle.size()
+
+		var next := Vector2(
+			inner_cycle[next_index].x,
+			inner_cycle[next_index].y
+		)
+
+		if not _is_point_inside_or_on_cycle(
+			current,
+			outer_cycle
+		):
+			return false
+
+		# Kenarın ortasını da kontrol ediyoruz.
+		# Bu, girintili dış bölgelerde daha güvenlidir.
+		var edge_middle := (
+			current + next
+		) * 0.5
+
+		if not _is_point_inside_or_on_cycle(
+			edge_middle,
+			outer_cycle
+		):
+			return false
+
+	return true
+	
