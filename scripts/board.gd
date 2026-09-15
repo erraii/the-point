@@ -1,7 +1,7 @@
 extends Control
 
-const GameGeometry := preload(
-	"res://scripts/game_geometry.gd"
+const GameStateScript := preload(
+	"res://scripts/game_state.gd"
 )
 
 const CaptureDetectorScript := preload(
@@ -28,16 +28,7 @@ const HUD_HEIGHT := 130.0
 const HUD_BOARD_GAP := 35.0
 const BOARD_TOP := HUD_HEIGHT + HUD_BOARD_GAP
 
-var current_player := PLAYER_GRAPHITE
-var points: Dictionary = {}
-var point_styles: Dictionary = {}
-var captured_regions: Array = []
-var captured_point_owners: Dictionary = {}
-var closed_cycles: Array = []
-var graphite_score := 0.0
-var red_score := 0.0
-var consecutive_passes := 0
-var game_over := false
+var game_state
 var capture_detector
 
 var pending_position := Vector2i(-1, -1)
@@ -72,7 +63,7 @@ func _draw() -> void:
 		)
 
 	_draw_captured_regions()
-	for grid_position in points:
+	for grid_position in game_state.points:
 		var center := Vector2(
 			grid_position.x * CELL_SIZE,
 			BOARD_TOP + grid_position.y * CELL_SIZE
@@ -80,7 +71,7 @@ func _draw() -> void:
 
 		var point_color: Color
 
-		if points[grid_position] == PLAYER_GRAPHITE:
+		if game_state.points[grid_position] == PLAYER_GRAPHITE:
 			point_color = GRAPHITE_COLOR
 		else:
 			point_color = RED_COLOR
@@ -88,13 +79,13 @@ func _draw() -> void:
 		_draw_pencil_point(
 			center,
 			point_color,
-			point_styles[grid_position]
+			game_state.point_styles[grid_position]
 		)
 	_draw_move_indicators()
 	_draw_hud()
 	
 func _draw_captured_regions() -> void:
-	for region in captured_regions:
+	for region in game_state.captured_regions:
 		var owner: int = int(region["owner"])
 		var cycle = region["cycle"]
 		var style_seed: int = int(region["style_seed"])
@@ -209,262 +200,6 @@ func _draw_pencil_point(
 			true
 		)
 		
-func _rebuild_closed_cycles() -> void:
-	closed_cycles.clear()
-
-	var players: Array[int] = [
-		PLAYER_GRAPHITE,
-		PLAYER_RED
-	]
-
-	for player in players:
-		var player_cycles: Array = (
-			capture_detector.find_closed_regions(
-				points,
-				captured_point_owners,
-				player
-			)
-		)
-
-		for cycle in player_cycles:
-			closed_cycles.append(
-				{
-					"owner": player,
-					"cycle": cycle.duplicate()
-				}
-			)
-			
-func _remove_regions_inside_cycle(
-	new_cycle: Array
-) -> void:
-	var new_area := GameGeometry.calculate_cycle_area(
-		new_cycle
-	)
-
-	for region_index in range(
-		captured_regions.size() - 1,
-		-1,
-		-1
-	):
-		var old_cycle = (
-			captured_regions[region_index]["cycle"]
-		)
-
-		var old_area := GameGeometry.calculate_cycle_area(
-			old_cycle
-		)
-
-		if (
-			old_area
-			> new_area
-			+ GameGeometry.EPSILON
-		):
-			continue
-
-		if GameGeometry.is_cycle_inside_cycle(
-			old_cycle,
-			new_cycle
-		):
-			captured_regions.remove_at(
-				region_index
-			)
-			
-func _get_other_player(player: int) -> int:
-	if player == PLAYER_GRAPHITE:
-		return PLAYER_RED
-
-	return PLAYER_GRAPHITE
-
-
-func _is_cycle_active(
-	cycle: Array,
-	owner: int
-) -> bool:
-	for grid_position in cycle:
-		if captured_point_owners.has(grid_position):
-			return false
-
-		if int(points.get(grid_position, -1)) != owner:
-			return false
-
-	return true
-
-func _cycle_has_new_content(
-	owner: int,
-	cycle: Array
-) -> bool:
-	for grid_position in points:
-		if cycle.has(grid_position):
-			continue
-
-		var point_position := Vector2(
-			grid_position.x,
-			grid_position.y
-		)
-
-		if not GameGeometry.is_point_inside_cycle(
-			point_position,
-			cycle
-		):
-			continue
-
-		if captured_point_owners.has(grid_position):
-			# Rakibin sahip olduğu eski bir bölge yeniden çevrilmiş.
-			if int(
-				captured_point_owners[grid_position]
-			) != owner:
-				return true
-
-		elif int(points[grid_position]) != owner:
-			# Aktif rakip noktası çevrilmiş.
-			return true
-
-	return false
-
-
-func _remove_inactive_closed_cycles() -> void:
-	for cycle_index in range(
-		closed_cycles.size() - 1,
-		-1,
-		-1
-	):
-		var stored_cycle = closed_cycles[cycle_index]
-		var owner := int(stored_cycle["owner"])
-		var cycle = stored_cycle["cycle"]
-
-		if not _is_cycle_active(cycle, owner):
-			closed_cycles.remove_at(cycle_index)
-
-
-func _capture_cycle(
-	owner: int,
-	cycle: Array
-) -> void:
-	# Sınırın içerisindeki bütün mevcut noktalar pasifleşir.
-	for grid_position in points:
-		if cycle.has(grid_position):
-			continue
-
-		var point_position := Vector2(
-			grid_position.x,
-			grid_position.y
-		)
-
-		if GameGeometry.is_point_inside_cycle(
-			point_position,
-			cycle
-		):
-			captured_point_owners[grid_position] = owner
-
-	# Büyük çevre, içindeki eski küçük bölgelerin yerini alır.
-	_remove_regions_inside_cycle(cycle)
-
-	captured_regions.append(
-		{
-			"owner": owner,
-			"cycle": cycle.duplicate(),
-			"style_seed": randi()
-		}
-	)
-
-	_remove_inactive_closed_cycles()
-
-
-func _evaluate_largest_capture_for_player(
-	owner: int
-) -> bool:
-	var largest_cycle: Array = []
-	var largest_area := 0.0
-
-	for stored_cycle in closed_cycles:
-		if int(stored_cycle["owner"]) != owner:
-			continue
-
-		var cycle = stored_cycle["cycle"]
-
-		if not _is_cycle_active(cycle, owner):
-			continue
-
-		if not _cycle_has_new_content(owner, cycle):
-			continue
-
-		var area := GameGeometry.calculate_cycle_area(cycle)
-
-		if area > largest_area:
-			largest_area = area
-			largest_cycle.clear()
-			largest_cycle.append_array(cycle)
-
-	if largest_cycle.is_empty():
-		return false
-
-	_capture_cycle(owner, largest_cycle)
-	return true
-
-func _evaluate_all_captures(
-	last_player: int
-) -> bool:
-	var other_player := _get_other_player(last_player)
-	var maximum_checks := closed_cycles.size() + 1
-	var capture_happened := false
-
-	# Öncelik hamleyi yapan oyuncudadır.
-	for check in range(maximum_checks):
-		if not _evaluate_largest_capture_for_player(
-			last_player
-		):
-			break
-
-		capture_happened = true
-
-	# Ardından rakibin hâlâ geçerli olan çevrelerini kontrol et.
-	for check in range(maximum_checks):
-		if not _evaluate_largest_capture_for_player(
-			other_player
-		):
-			break
-
-		capture_happened = true
-
-	if capture_happened:
-		_recalculate_scores()
-
-	return capture_happened
-	
-func _is_position_inside_captured_region(
-	grid_position: Vector2i
-) -> bool:
-	var point_position := Vector2(
-		grid_position.x,
-		grid_position.y
-	)
-
-	for region in captured_regions:
-		var cycle = region["cycle"]
-
-		if GameGeometry.is_point_inside_cycle(
-			point_position,
-			cycle
-		):
-			return true
-
-	return false
-
-
-func _recalculate_scores() -> void:
-	graphite_score = 0.0
-	red_score = 0.0
-
-	for region in captured_regions:
-		var owner := int(region["owner"])
-		var cycle = region["cycle"]
-		var region_area := GameGeometry.calculate_cycle_area(cycle)
-
-		if owner == PLAYER_GRAPHITE:
-			graphite_score += region_area
-		else:
-			red_score += region_area
-	
 func _gui_input(event: InputEvent) -> void:
 	if (
 		event is InputEventMouseButton
@@ -500,21 +235,12 @@ func _try_place_point(local_position: Vector2) -> void:
 	var row := roundi(
 		board_position.y / CELL_SIZE
 	)
-	if game_over:
-		return
-		
-	if column < 0 or column >= COLUMNS:
-		return
+	var grid_position := Vector2i(
+		column,
+		row
+	)
 
-	if row < 0 or row >= ROWS:
-		return
-
-	var grid_position := Vector2i(column, row)
-
-	if points.has(grid_position):
-		return
-
-	if _is_position_inside_captured_region(
+	if not game_state.can_place_point(
 		grid_position
 	):
 		return
@@ -557,7 +283,7 @@ func _draw_hud() -> void:
 	draw_string(
 		font,
 		Vector2(30.0, 50.0),
-		"Siyah: %s" % _format_score(graphite_score),
+		"Siyah: %s" % _format_score(game_state.graphite_score),
 		HORIZONTAL_ALIGNMENT_LEFT,
 		-1.0,
 		HUD_FONT_SIZE,
@@ -567,7 +293,7 @@ func _draw_hud() -> void:
 	draw_string(
 		font,
 		Vector2(420.0, 50.0),
-		"Kırmızı: %s" % _format_score(red_score),
+		"Kırmızı: %s" % _format_score(game_state.red_score),
 		HORIZONTAL_ALIGNMENT_LEFT,
 		-1.0,
 		HUD_FONT_SIZE,
@@ -577,16 +303,18 @@ func _draw_hud() -> void:
 	var current_color: Color
 	var current_player_text: String
 
-	if game_over:
-		if graphite_score > red_score:
+	if game_state.game_over:
+		if game_state.graphite_score > game_state.red_score:
 			current_color = GRAPHITE_COLOR
-		elif red_score > graphite_score:
+		elif game_state.red_score > game_state.graphite_score:
 			current_color = RED_COLOR
 		else:
 			current_color = HUD_TEXT_COLOR
 
-		current_player_text = _get_game_result_text()
-	elif current_player == PLAYER_GRAPHITE:
+		current_player_text = (
+			game_state.get_game_result_text()
+		)
+	elif game_state.current_player == PLAYER_GRAPHITE:
 		current_color = GRAPHITE_COLOR
 		current_player_text = "Sıra: Siyah"
 
@@ -613,7 +341,7 @@ func _draw_hud() -> void:
 	_draw_action_buttons()
 
 func _get_pass_button_rectangle() -> Rect2:
-	if game_over:
+	if game_state.game_over:
 		return Rect2(
 			Vector2(720.0, 68.0),
 			Vector2(70.0, 52.0)
@@ -666,7 +394,7 @@ func _draw_button(
 	)
 
 func _draw_action_buttons() -> void:
-	if game_over:
+	if game_state.game_over:
 		_draw_button(
 			_get_pass_button_rectangle(),
 			"↻",
@@ -697,36 +425,10 @@ func _draw_action_buttons() -> void:
 		Color(0.34, 0.43, 0.48, 1.0)
 	)
 
-func _get_game_result_text() -> String:
-	if is_equal_approx(graphite_score, red_score):
-		return "Berabere"
-
-	if graphite_score > red_score:
-		return "Siyah kazandı"
-
-	return "Kırmızı kazandı"
-
-func _finish_game() -> void:
-	game_over = true
-	queue_redraw()
-	
-func _pass_turn() -> void:
-	if game_over:
-		return
-
-	consecutive_passes += 1
-
-	if consecutive_passes >= 2:
-		_finish_game()
-		return
-
-	current_player = _get_other_player(current_player)
-	queue_redraw()
-
 func _try_press_action_button(
 	local_position: Vector2
 ) -> bool:
-	if game_over:
+	if game_state.game_over:
 		if _get_pass_button_rectangle().has_point(
 			local_position
 		):
@@ -753,7 +455,8 @@ func _try_press_action_button(
 	if _get_pass_button_rectangle().has_point(
 		local_position
 	):
-		_pass_turn()
+		game_state.pass_turn()
+		queue_redraw()
 		return true
 
 	return false
@@ -763,6 +466,11 @@ func _restart_game() -> void:
 
 func _ready() -> void:
 	capture_detector = CaptureDetectorScript.new(
+		COLUMNS,
+		ROWS
+	)
+	
+	game_state = GameStateScript.new(
 		COLUMNS,
 		ROWS
 	)
@@ -797,7 +505,7 @@ func _draw_move_indicators() -> void:
 
 	var pending_color: Color
 
-	if current_player == PLAYER_GRAPHITE:
+	if game_state.current_player == PLAYER_GRAPHITE:
 		pending_color = GRAPHITE_COLOR
 	else:
 		pending_color = RED_COLOR
@@ -838,34 +546,24 @@ func _confirm_pending_move() -> void:
 	if not has_pending_move:
 		return
 
-	var grid_position := pending_position
-	var placed_player := current_player
+	var confirmed_position := pending_position
 
-	consecutive_passes = 0
+	if not game_state.can_place_point(
+		confirmed_position
+	):
+		_cancel_pending_move()
+		return
 
-	points[grid_position] = placed_player
-	point_styles[grid_position] = pending_style_seed
+	game_state.play_move(
+		confirmed_position,
+		pending_style_seed
+	)
 
-	last_placed_position = grid_position
+	last_placed_position = confirmed_position
 	has_last_move = true
 
 	has_pending_move = false
 	pending_position = Vector2i(-1, -1)
-
-	_rebuild_closed_cycles()
-
-	var capture_happened := (
-		_evaluate_all_captures(placed_player)
-	)
-
-	# Capture sonrasında bazı noktalar pasifleştiği için
-	# yalnızca o zaman çevreleri tekrar oluşturuyoruz.
-	if capture_happened:
-		_rebuild_closed_cycles()
-
-	current_player = _get_other_player(
-		placed_player
-	)
 
 	queue_redraw()
 	
